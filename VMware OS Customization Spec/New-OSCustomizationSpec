@@ -1,0 +1,401 @@
+$vmwList = @(
+    'vcenter01',
+    'vcenter02',
+    'vcenter03'
+)
+
+[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Drawing") 
+[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")  
+
+$myVMSpecForm = New-Object System.Windows.Forms.Form    
+$myVMSpecForm.Size = New-Object System.Drawing.Size(600, 430)  
+$myVMSpecForm.Text = "New VM Spec"
+
+# ---------------------------------------- Start functions ------------------------------------------
+
+function Start-VMSpec {
+
+    $vCenter = $DropDownBox.SelectedItem.ToString() 
+
+    If (-not $vCreds) { $script:vCreds = Get-Credential -Message "vCenter credentials" }
+
+    try {
+        Connect-ViServer -Server $vCenter -Credential $vCreds -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Host "Invalid credentials... Stopped" -ForegroundColor Red
+        $script:vCreds = $Null
+        Exit
+    }
+
+    $script:CRED_Local = Get-Credential -Message "Lokal admin password" -username Administrator 
+
+    # Set Customer Variables
+    $script:Kundenavn = $KundenavnBox.Text
+    $script:KundeKode = $KundekodeBox.Text
+    $script:KundeDomain = $KundedomainBox.Text
+    # Set Networkinfo
+    $script:vlan = $VlanBox.Text
+    $script:Gateway = $GatewayBox.Text
+    $script:Mask = $MaskBox.Text
+    $script:DNS1 = $DNS1Box.Text
+    $script:DNS2 = $DNS2Box.Text
+    # Set DMZ Networkinfo
+    $script:DMZvlan = $DMZVlanBox.Text
+    $script:DMZGateway = $DMZGatewayBox.Text
+    $script:DMZMask = $DMZMaskBox.Text
+    $script:DMZDNS1 = $DMZDNS1Box.Text
+    $script:DMZDNS2 = $DMZDNS2Box.Text
+
+
+    if ($VlanBox.Text) {
+        $script:CRED_Domain = Get-Credential -Message "Domain join konto"
+        New-VMSpec
+    }
+    else { Write-Host "Vlan info not provided... skipped..." -ForegroundColor Red }
+    if ($DMZVlanBox.Text) {
+        New-DMZVMSpec
+    }
+    else { Write-Host "DMZ info not provided... skipped..." -ForegroundColor Red }
+    if ($DMZJoinCheckbox.Checked -eq $true) {
+        if (-not $CRED_Domain) { $CRED_Domain = Get-Credential -Message "Domain join konto" }
+        New-DMZJoinVMSpec
+    }
+    else { Write-Host "Box not checked... skipped..." -ForegroundColor Red }
+
+    Disconnect-VIServer -Server * -Confirm:$false -Force
+    
+}
+
+function New-VMSpec {
+    # Create the specifications and NIC Mappings for DomainJoin
+    $sCust = @{
+        Name                  = "$($KundeKode) - v$($vlan)"
+        Description           = "Domain Join
+Vlan $($vlan)"
+        OSType                = 'Windows'
+        Type                  = 'Persistent'
+        TimeZone              = 'Romance'
+        FullName              = $Kundenavn
+        OrgName               = $Kundenavn
+        AdminPassword         = $CRED_Local
+        DomainCredentials     = $CRED_Domain
+        Domain                = "$($KundeDomain)"
+        NamingScheme          = 'VM'
+        AutoLogonCount        = 2
+        ChangeSID             = $true
+        LicenseMode           = "PerServer"
+        LicenseMaxConnections = "5"
+        Confirm               = $false
+    }
+
+    $cust = New-OSCustomizationSpec @sCust
+
+    $sCustNic = @{
+        ipmode         = 'PromptUser'
+        DefaultGateway = $Gateway
+        SubnetMask     = $Mask
+        Dns            = "$($DNS1)", "$($DNS2)"
+    }
+
+    Get-OSCustomizationNicMapping -OSCustomizationSpec $cust |
+    Set-OSCustomizationNicMapping @sCustNic
+}
+
+function New-DMZVMSpec {
+    # Create the specifications and NIC Mappings for NoDomainJoin
+    $sCustDMZ = @{
+        Name                  = "$($KundeKode) - v$($DMZvlan) DMZ - NoDomainJoin"
+        Description           = "DMZ Vlan $($DMZvlan)"
+        OSType                = 'Windows'
+        Type                  = 'Persistent'
+        TimeZone              = 'Romance'
+        FullName              = $Kundenavn
+        OrgName               = $Kundenavn
+        AdminPassword         = $CRED_Local
+        Workgroup             = "WORKGROUP"
+        NamingScheme          = 'VM'
+        AutoLogonCount        = 2
+        ChangeSID             = $true
+        LicenseMode           = "PerServer"
+        LicenseMaxConnections = "5"
+        Confirm               = $false
+    }
+
+    $custDMZ = New-OSCustomizationSpec @sCustDMZ
+
+    $sCustNicDMZ = @{
+        ipmode         = 'PromptUser'
+        DefaultGateway = $DMZGateway
+        SubnetMask     = $DMZMask
+        Dns            = "$($DMZDNS1)", "$($DMZDNS2)"
+    }
+
+    Get-OSCustomizationNicMapping -OSCustomizationSpec $custDMZ |
+    Set-OSCustomizationNicMapping @sCustNicDMZ
+}
+
+function New-DMZJoinVMSpec {
+    # Create the specifications and NIC Mappings for NoDomainJoin
+    $sCustDMZ = @{
+        Name                  = "$($KundeKode) - v$($DMZvlan) DMZ"
+        Description           = "Domain Join
+DMZ Vlan $($DMZvlan)"
+        OSType                = 'Windows'
+        Type                  = 'Persistent'
+        TimeZone              = 'Romance'
+        FullName              = $Kundenavn
+        OrgName               = $Kundenavn
+        AdminPassword         = $CRED_Local
+        DomainCredentials     = $CRED_Domain
+        Domain                = "$($KundeDomain)"
+        NamingScheme          = 'VM'
+        AutoLogonCount        = 2
+        ChangeSID             = $true
+        LicenseMode           = "PerServer"
+        LicenseMaxConnections = "5"
+        Confirm               = $false
+    }
+
+    $custDMZ = New-OSCustomizationSpec @sCustDMZ
+
+    $sCustNicDMZ = @{
+        ipmode         = 'PromptUser'
+        DefaultGateway = $DMZGateway
+        SubnetMask     = $DMZMask
+        Dns            = "$($DNS1)", "$($DNS2)"
+    }
+
+    Get-OSCustomizationNicMapping -OSCustomizationSpec $custDMZ |
+    Set-OSCustomizationNicMapping @sCustNicDMZ
+}
+
+function Stop {
+    Disconnect-VIServer -Server * -Confirm:$false -Force
+    $myVMSpecForm.Close()
+} #end Stop
+
+# ---------------------------------------- End functions --------------------------------------------
+
+# ---------------------------------------- Start drop down box --------------------------------------
+
+$DropDownBox = New-Object System.Windows.Forms.ComboBox 
+$DropDownBox.Location = New-Object System.Drawing.Size(20, 30) # Location
+$DropDownBox.Size = New-Object System.Drawing.Size(250, 20) # Size
+$DropDownBox.DropDownHeight = 200
+$myVMSpecForm.Controls.Add($DropDownBox)
+
+$DropDownLabel = New-Object System.Windows.Forms.label
+$DropDownLabel.Location = New-Object System.Drawing.Size(20, 16) 
+$DropDownLabel.ForeColor = "black"
+$DropDownLabel.Text = "Select vCenter"
+$myVMSpecForm.Controls.Add($DropDownLabel)
+
+# Populate dropdown list
+foreach ($vmw in $vmwList) {
+    $DropDownBox.Items.Add($vmw)
+} 
+
+# ---------------------------------------- End drop down box ----------------------------------------
+
+# ---------------------------------------- Start text fields ----------------------------------------
+#region Kunde info
+$KundenavnBox = New-Object System.Windows.Forms.TextBox # Kundenavn box
+$KundenavnBox.Location = New-Object System.Drawing.Size(20, 70) 
+$KundenavnBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($KundenavnBox)
+
+$KundenavnLabel = New-Object System.Windows.Forms.label # Kundenavn label
+$KundenavnLabel.Location = New-Object System.Drawing.Size(20, 56)
+$KundenavnLabel.Size = New-Object System.Drawing.Size(250, 20)
+$KundenavnLabel.ForeColor = "black"
+$KundenavnLabel.Text = "Kundenavn:"
+$myVMSpecForm.Controls.Add($KundenavnLabel)
+
+$KundekodeBox = New-Object System.Windows.Forms.TextBox # Kundekode box
+$KundekodeBox.Location = New-Object System.Drawing.Size(20, 110)
+$KundekodeBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($KundekodeBox)
+
+$KundekodeLabel = New-Object System.Windows.Forms.label # Kundekode label
+$KundekodeLabel.Location = New-Object System.Drawing.Size(20, 96)
+$KundekodeLabel.Size = New-Object System.Drawing.Size(250, 20)
+$KundekodeLabel.ForeColor = "black"
+$KundekodeLabel.Text = "Kundekode:"
+$myVMSpecForm.Controls.Add($KundekodeLabel)
+
+$KundedomainBox = New-Object System.Windows.Forms.TextBox # Kundedomain box
+$KundedomainBox.Location = New-Object System.Drawing.Size(20, 150)
+$KundedomainBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($KundedomainBox)
+
+$KundedomainLabel = New-Object System.Windows.Forms.label # Kundedomain label
+$KundedomainLabel.Location = New-Object System.Drawing.Size(20, 136)
+$KundedomainLabel.Size = New-Object System.Drawing.Size(250, 20)
+$KundedomainLabel.ForeColor = "black"
+$KundedomainLabel.Text = "Kundens domæne:"
+$myVMSpecForm.Controls.Add($KundedomainLabel)
+#endregion
+#region Server vlan info
+$VlanBox = New-Object System.Windows.Forms.TextBox # Server vlan box
+$VlanBox.Location = New-Object System.Drawing.Size(20, 190) 
+$VlanBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($VlanBox)
+
+$VlanLabel = New-Object System.Windows.Forms.label # Server vlan label
+$VlanLabel.Location = New-Object System.Drawing.Size(20, 176)
+$VlanLabel.Size = New-Object System.Drawing.Size(250, 20)
+$VlanLabel.ForeColor = "black"
+$VlanLabel.Text = "Server vlan:"
+$myVMSpecForm.Controls.Add($VlanLabel)
+
+$GatewayBox = New-Object System.Windows.Forms.TextBox # Server gateway box
+$GatewayBox.Location = New-Object System.Drawing.Size(20, 230)
+$GatewayBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($GatewayBox)
+
+$GatewayLabel = New-Object System.Windows.Forms.label # Server gateway label
+$GatewayLabel.Location = New-Object System.Drawing.Size(20, 216)
+$GatewayLabel.Size = New-Object System.Drawing.Size(250, 20)
+$GatewayLabel.ForeColor = "black"
+$GatewayLabel.Text = "Server gateway:"
+$myVMSpecForm.Controls.Add($GatewayLabel)
+
+$MaskBox = New-Object System.Windows.Forms.TextBox # Server mask box
+$MaskBox.Location = New-Object System.Drawing.Size(20, 270)
+$MaskBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($MaskBox)
+
+$MaskLabel = New-Object System.Windows.Forms.label # Server mask label
+$MaskLabel.Location = New-Object System.Drawing.Size(20, 256)
+$MaskLabel.Size = New-Object System.Drawing.Size(250, 20)
+$MaskLabel.ForeColor = "black"
+$MaskLabel.Text = "Server mask:"
+$myVMSpecForm.Controls.Add($MaskLabel)
+
+$DNS1Box = New-Object System.Windows.Forms.TextBox # Server DNS1 box
+$DNS1Box.Location = New-Object System.Drawing.Size(20, 310) 
+$DNS1Box.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DNS1Box)
+
+$DNS1Label = New-Object System.Windows.Forms.label # Server DNS1 label
+$DNS1Label.Location = New-Object System.Drawing.Size(20, 296)
+$DNS1Label.Size = New-Object System.Drawing.Size(250, 20)
+$DNS1Label.ForeColor = "black"
+$DNS1Label.Text = "Server primary dns:"
+$myVMSpecForm.Controls.Add($DNS1Label)
+
+$DNS2Box = New-Object System.Windows.Forms.TextBox # Server DNS2 box
+$DNS2Box.Location = New-Object System.Drawing.Size(20, 350)
+$DNS2Box.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DNS2Box)
+
+$DNS2Label = New-Object System.Windows.Forms.label # Server DNS2 label
+$DNS2Label.Location = New-Object System.Drawing.Size(20, 336)
+$DNS2Label.Size = New-Object System.Drawing.Size(250, 20)
+$DNS2Label.ForeColor = "black"
+$DNS2Label.Text = "Server secundary dns:"
+$myVMSpecForm.Controls.Add($DNS2Label)
+#endregion
+#region DMZ vlan info
+$DMZVlanBox = New-Object System.Windows.Forms.TextBox # DMZ vlan box
+$DMZVlanBox.Location = New-Object System.Drawing.Size(290, 190) 
+$DMZVlanBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DMZVlanBox)
+    
+$DMZVlanLabel = New-Object System.Windows.Forms.label # DMZ vlan label
+$DMZVlanLabel.Location = New-Object System.Drawing.Size(290, 176)
+$DMZVlanLabel.Size = New-Object System.Drawing.Size(250, 20)
+$DMZVlanLabel.ForeColor = "black"
+$DMZVlanLabel.Text = "DMZ vlan:"
+$myVMSpecForm.Controls.Add($DMZVlanLabel)
+    
+$DMZGatewayBox = New-Object System.Windows.Forms.TextBox # DMZ gateway box
+$DMZGatewayBox.Location = New-Object System.Drawing.Size(290, 230)
+$DMZGatewayBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DMZGatewayBox)
+    
+$DMZGatewayLabel = New-Object System.Windows.Forms.label # DMZ gateway label
+$DMZGatewayLabel.Location = New-Object System.Drawing.Size(290, 216)
+$DMZGatewayLabel.Size = New-Object System.Drawing.Size(250, 20)
+$DMZGatewayLabel.ForeColor = "black"
+$DMZGatewayLabel.Text = "DMZ gateway:"
+$myVMSpecForm.Controls.Add($DMZGatewayLabel)
+    
+$DMZMaskBox = New-Object System.Windows.Forms.TextBox # DMZ mask box
+$DMZMaskBox.Location = New-Object System.Drawing.Size(290, 270)
+$DMZMaskBox.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DMZMaskBox)
+    
+$DMZMaskLabel = New-Object System.Windows.Forms.label # DMZ mask label
+$DMZMaskLabel.Location = New-Object System.Drawing.Size(290, 256)
+$DMZMaskLabel.Size = New-Object System.Drawing.Size(250, 20)
+$DMZMaskLabel.ForeColor = "black"
+$DMZMaskLabel.Text = "DMZ mask:"
+$myVMSpecForm.Controls.Add($DMZMaskLabel)
+
+$DMZDNS1Box = New-Object System.Windows.Forms.TextBox # DMZ DNS1 box
+$DMZDNS1Box.Location = New-Object System.Drawing.Size(290, 310) 
+$DMZDNS1Box.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DMZDNS1Box)
+    
+$DMZDNS1Label = New-Object System.Windows.Forms.label # DMZ DNS1 label
+$DMZDNS1Label.Location = New-Object System.Drawing.Size(290, 296)
+$DMZDNS1Label.Size = New-Object System.Drawing.Size(250, 20)
+$DMZDNS1Label.ForeColor = "black"
+$DMZDNS1Label.Text = "DMZ primary dns:"
+$myVMSpecForm.Controls.Add($DMZDNS1Label)
+
+$DMZDNS2Box = New-Object System.Windows.Forms.TextBox # DMZ DNS2 box
+$DMZDNS2Box.Location = New-Object System.Drawing.Size(290, 350)
+$DMZDNS2Box.Size = New-Object System.Drawing.Size(250, 20) 
+$myVMSpecForm.Controls.Add($DMZDNS2Box)
+
+$DMZDNS2Label = New-Object System.Windows.Forms.label # DMZ DNS2 label
+$DMZDNS2Label.Location = New-Object System.Drawing.Size(290, 336)
+$DMZDNS2Label.Size = New-Object System.Drawing.Size(250, 20)
+$DMZDNS2Label.ForeColor = "black"
+$DMZDNS2Label.Text = "DMZ secundary dns:"
+$myVMSpecForm.Controls.Add($DMZDNS2Label)
+#endregion
+
+# ---------------------------------------- End text fields ------------------------------------------
+
+# ---------------------------------------- Start buttons --------------------------------------------
+
+# Start button
+$CreateButton = New-Object System.Windows.Forms.Button 
+$CreateButton.Location = New-Object System.Drawing.Size(400, 30) 
+$CreateButton.Size = New-Object System.Drawing.Size(110, 40) 
+$CreateButton.Text = "Create" 
+$CreateButton.Add_Click({ Start-VMSpec }) 
+# Close button
+$CloseButton = New-Object System.Windows.Forms.Button
+$CloseButton.Location = New-Object System.Drawing.Size(400, 75) 
+$CloseButton.Size = New-Object System.Drawing.Size(110, 40) 
+$CloseButton.Text = "Close" 
+$CloseButton.Add_Click({ Stop }) 
+# checkbox
+$DMZJoinCheckbox = New-Object System.Windows.Forms.Checkbox 
+$DMZJoinCheckbox.Location = New-Object System.Drawing.Size(400, 120) 
+$DMZJoinCheckbox.Size = New-Object System.Drawing.Size(500, 20)
+$DMZJoinCheckbox.Text = "Domain join DMZ"
+
+$myVMSpecForm.Controls.Add($CreateButton) 
+$myVMSpecForm.Controls.Add($CloseButton)
+$myVMSpecForm.Controls.Add($DMZJoinCheckbox)
+
+# ---------------------------------------- End buttons ----------------------------------------------
+
+#Credits label
+$CreditsLabel = New-Object System.Windows.Forms.label
+$CreditsLabel.Location = New-Object System.Drawing.Size(475, 5)
+$CreditsLabel.Size = New-Object System.Drawing.Size(150, 15)
+$CreditsLabel.ForeColor = "gray"
+$CreditsLabel.Text = "by TME"
+$myVMSpecForm.Controls.Add($CreditsLabel)
+
+$myVMSpecForm.Topmost = $true
+
+$myVMSpecForm.Add_Shown({ $myVMSpecForm.Activate() })
+[void] $myVMSpecForm.ShowDialog()
