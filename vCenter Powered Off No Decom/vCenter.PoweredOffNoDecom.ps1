@@ -86,7 +86,6 @@ Undersøg om serveren er decommet, og der er glemt navn/tag - eller om kunden se
 Hvis serveren har et change/ticket nummer i navnet, undersøg hvorfor den er slukket. Følg gerne op på om den fortsat skal beholdes. `r `n
 Kontakt kunden og spørg, hvad der skal ske med serveren. Vil de beholde den? Skal den decommes?`r
 Hvis serveren skal beholdes, tilføj <i>(beholdes [ticket nummer])</i> til servernavnet i VMware. fx. <i>PRODDOK (beholdes UIT2010-9999)</i>"
-# $operatorId = "ab511efa-5055-430e-8d85-fcf086a95de2" # Tobias Bondo Menzi -operatorId $operatorId
 
 $Ticket = New-TopDeskOperationsTicket -briefDescription $briefDescription -ticketBody $ticketBody 
 Write-host 'TopDesk ticket [' + $Ticket.number + '] created ' -ForegroundColor Green

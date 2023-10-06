@@ -53,7 +53,7 @@ function Remove-ADServer {
             Where-Object { $_.HostName -like "*$($myServer)*" }) {
             try {
                 Remove-DnsServerResourceRecord -InputObject $aRecord -ZoneName $fwdZone.ZoneName -ComputerName $myDNSServer -Force -Confirm:$false
-                $(Write-Host "Successfully removed PTR record for " -NoNewline) + $(Write-Host "$($myServer)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " from " -NoNewline) + $(Write-Host "$($fwdZone.ZoneName)" -ForegroundColor Cyan)
+                $(Write-Host "Successfully removed forward record for " -NoNewline) + $(Write-Host "$($myServer)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " from " -NoNewline) + $(Write-Host "$($fwdZone.ZoneName)" -ForegroundColor Cyan)
             }
             catch {
                 Write-Host "Something vent wrong, please check for A records manually" -ForegroundColor Red
