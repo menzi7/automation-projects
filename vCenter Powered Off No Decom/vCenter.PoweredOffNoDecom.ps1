@@ -26,9 +26,7 @@ param (
 $Credential = Get-TssCredentialObject -secretId 2970
 
 $Connections = @(
-    'vcenter01',
-    'vcenter02',
-    'vcenter03'
+  'pvv-vcsa.mst.local'
 )
 
 Foreach ($Connection in $Connections) {
@@ -38,7 +36,6 @@ Foreach ($Connection in $Connections) {
 $Report = [PSCustomObject]@()
 $VMs = ""
 
-$ExcludeTag = Get-Tag -Name "DECOM_NOSPLA"
 $VMs = (Get-VM).Where{ $_.PowerState -eq 'Poweredoff' -and $_.Name -notlike "*VDA*" -and $_.Name -notlike "*CTX*" -and $_.Name -notlike "*VW-CA*" -and $_.Name -notlike "*VW-ROOTCA*" -and $_.Name -notlike "*beholdes*" }
 $Tags = $VMs | Get-TagAssignment
 $VMHost = Get-VMHost | Select-Object Name, @{N = "vCenter"; E = { $_.UID.Split('@')[1].Split(':')[0] } }
@@ -60,7 +57,7 @@ ForEach ($VM in $VMs) {
   }
 
   # Skip VM if it is properly decom
-  if ($ExcludeTag.Name -contains $ATag -and $VM.Name -like "*decom*") { continue }
+  if ($VM.Name -like "*decom*") { continue }
 
   $lastPO = ($PowerOffEvents | Where-Object { $_.Group[0].Vm.Vm -eq $VM.Id }).Group | Sort-Object -Property CreatedTime -Descending | Select-Object -First 1
   $row = "" | Select-Object VMName, Cluster, vCenter, Tags, PoweredOffTime, PoweredOffBy
