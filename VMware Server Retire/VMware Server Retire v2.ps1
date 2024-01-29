@@ -3,125 +3,88 @@
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Scope Session -Confirm:$False | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
 
-New-EventLog -Source "MM" -LogName Application -Erroraction SilentlyContinue
-
 Write-Host "`r`nVMware Server Retire`r`n" -ForegroundColor Cyan
 
-If (-not $domain1Credential) { 
-    Write-Host "Enter your domain1 credentials (to connect to vCenters)"
-    Write-Host "xxx.admin`r`n"
-    $domain1Credential = Get-Credential -Message "Enter your domain1 credentials (to connect to vCenters)`r`nxxx.admin" 
-}
-
-$domain1Connections = @(
-    'vcenter01.domain1',
-    'vcenter02.domain1',
-    'vcenter03.domain1',
-    'vcenter04.domain1',
-    'vcenter05.domain1',
-    'vcenter06.domain1'
+$vCenterConnections = @(
+    'pvv-vcsa.mst.local'
 )
 
-Foreach ($domain1Connection in $domain1Connections) {
-    try {
-        Connect-ViServer -Server $domain1Connection -Credential $domain1Credential -ErrorAction Stop | Out-Null
+function Get-CredentialsWithRetry {
+    $attempts = 0
+    $credential = $null
+    while (!$credential -and $attempts -lt 3) {
+        $credential = Get-Credential -Message "Enter your credentials (to connect to vCenters)"
+        if (!$credential) {
+            $attempts++
+            Write-Host "Invalid credentials. Attempt $attempts of 3."
+        }
     }
-    catch {
-        Write-Host "Invalid credentials... Stopped" -ForegroundColor Red
-        $domain1Credential = $Null
-        Exit
+    if (!$credential) {
+        Write-Host "Failed to get valid credentials after 3 attempts. Exiting.`r`n"
+        return $null
+    }
+    return $vCenterCredential
+}
+
+function Initialize-Retire {
+    $vCenterConnectionSuccess = Open-vCenterConnections -credentials $vCenterCredential -connections $vCenterConnections
+
+    if (!$vCenterConnectionSuccess) {
+        Write-Host "Connection failed with service.outforce.dk credentials"
+        $vCenterCredential = $null
+        Return
+    }
+    if ($vCenterConnectionSuccess) {
+        Write-Host "`r`nConnected to:" -ForegroundColor Green
+        $global:DefaultVIServers.Name
+        Write-Host
+        Get-VMwareServer
     }
 }
 
-If (-not $domain2Credential) { 
-    Write-Host "Enter your domain2 credentials (to connect to vCenters)"
-    Write-Host "admXXX`r`n"
-    $domain2Credential = Get-Credential -Message "Enter your domain2 credentials (to connect to vCenters)`r`nadmXXX" 
-}
-
-$domain2Connections = @(
-    'vcenter01.domain2',
-    'vcenter02.domain2',
-    'vcenter03.domain2',
-    'vcenter04.domain2',
-    'vcenter05.domain2'
-)
-
-Foreach ($domain2Connection in $domain2Connections) {
-    try {
-        Connect-ViServer -Server $domain2Connection -Credential $domain2Credential -ErrorAction Stop | Out-Null
+function Open-vCenterConnections {
+    param (
+        [PSCredential]$credentials,
+        [array]$connections
+    )
+    Foreach ($connection in $connections) {
+        try {
+            Connect-ViServer -Server $connection -Credential $credentials -ErrorAction Stop | Out-Null
+        } catch { Return $false }
     }
-    catch {
-        Write-Host "Invalid credentials... Stopped" -ForegroundColor Red
-        $domain2Credential = $Null
-        Exit
-    }
+    Return $true
 }
-
-Write-Host "`rConnected to:" -ForegroundColor Green
-$global:DefaultVIServers.Name
-Write-Host
 
 function Get-VMwareServer {
-
     $ServerName = Read-Host "Enter servername - NOT FQDN"
-    $global:ChangeID = Read-Host "Enter change-id"
     Write-Host
 
-    #Search for VMs
-    $VMs = @()
     try {
         $VMs = Get-VM -Name "*$ServerName*" -ErrorAction Stop
     }
     catch {
         Write-Host "Server with name '$ServerName' was not found... Stopped"
-        Exit
+        return
     }
 
-    #Get FQDNs
-    $FQDNs = @()
+    $Result = @()
     foreach ($vm in $VMs) {
-        $FQDNs += $vm.Guest.Hostname
-    }
-
-    #Get vCenter
-    $VMHost = Get-VMHost | Select-Object Name, @{N = "vCenter"; E = { $_.UID.Split('@')[1].Split(':')[0] } }
-    $vCenter = @()
-    foreach ($vm in $VMs) {
-        $VMHost | Where-Object { $_.Name -eq $vm.VMHost.name } |
-        ForEach-Object -Process {
-            $vCenter += $_.vCenter
-        }
-    }
-    
-    # Check if there are the same count of $VMs and $vCenter
-    if ($VMs.Count -ne $vCenter.Count) {
-        Write-Host "Arrays have different lengths. They cannot be combined."
-    }
-    else {
-        # Initialize a new array to store the combined values
-        $Result = @()
-
-        # Loop through the arrays and combine the elements
-        for ($i = 0; $i -lt $VMs.Count; $i++) {
+        $VMHost = Get-VMHost | Where-Object { $_.Name -eq $vm.VMHost.Name }
+        if ($VMHost) {
             $entry = [PSCustomObject]@{
-                VM      = $VMs[$i]
-                vCenter = $vCenter[$i]
+                VM      = $vm
+                vCenter = $VMHost.UID.Split('@')[1].Split(':')[0]
+                FQDN    = $vm.Guest.Hostname
             }
-            
-            # Check if the index exists in $FQDN array
-            if ($i -lt $FQDNs.Count) {
-                $entry | Add-Member -MemberType NoteProperty -Name "FQDN" -Value $FQDNs[$i]
-            }
-            
             $Result += $entry
         }
-        $global:Result = $Result | Select-Object VM, FQDN, vCenter
-        Confirm-VM
     }
+    $Result | Select-Object VM, FQDN, vCenter
+    Confirm-VM
 }
 
 function Confirm-VM {
+    $ConfirmedVM = $null
     if ($Result.Count -ge "2") {
         # More than one server found
         # Display a numbered list of entries in columns
@@ -138,7 +101,7 @@ function Confirm-VM {
         # Check if the user entered 'q' to quit
         if ($selectedEntryIndex -eq "q") {
             Write-Host "Exiting the selection process."
-            Exit
+            Return
         }
         # Check if the user's input is a valid number
         elseif ($selectedEntryIndex -match '^\d+$' -and [int]$selectedEntryIndex -ge 1 -and [int]$selectedEntryIndex -le $Result.Count) {
@@ -152,45 +115,41 @@ function Confirm-VM {
 
         if ($Null -ne $selectedEntry.FQDN) {
             # The FQDN exists
-            $(Write-Host "`r`nYou selected: " -NoNewline) + $(Write-Host "$($selectedEntry.FQDN)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($selectedEntry.vCenter)" -ForegroundColor Cyan -NoNewline)
-
-            $global:ConfirmedVM = $selectedEntry
+            $ConfirmedVM = $selectedEntry
         }
         else {
             # The FQDN doesn't exist
-            $(Write-Host "`r`nYou selected: " -NoNewline) + $(Write-Host "$($selectedEntry.VM)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($selectedEntry.vCenter)" -ForegroundColor Cyan -NoNewline)
-            
-            $global:ConfirmedVM = $selectedEntry
+            $ConfirmedVM = $selectedEntry
         }
     }
     else {
         # Only one VM found
         if ($null -ne $Result.FQDN) {
             # The FQDN exists
-            $Confirmation = $(Write-Host "Found: " -NoNewline) + $(Write-Host "$($Result.FQDN)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($Result.vCenter)" -ForegroundColor Cyan -NoNewline) + 
+            $Confirmation = $(Write-Host "Found: " -NoNewline) + $(Write-Host "$($Result.FQDN)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($Result.vCenter)" -ForegroundColor Cyan -NoNewline) +
             $(Write-Host " - Is this the right server? y/n " -NoNewline; Read-Host)
             if ($Confirmation -eq 'y') {
                 Write-Host "Confirmed`r`n" -ForegroundColor Green
 
-                $global:ConfirmedVM = $Result
+                $ConfirmedVM = $Result
             }
             else {
                 Write-Host "Stopped" -ForegroundColor Red
-                Exit
+                Break
             }
         }
         else {
             # The FQDN doesn't exist
-            $Confirmation = $(Write-Host "Found: " -NoNewline) + $(Write-Host "$($Result.VM)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($Result.vCenter)" -ForegroundColor Cyan -NoNewline) + 
+            $Confirmation = $(Write-Host "Found: " -NoNewline) + $(Write-Host "$($Result.VM)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($Result.vCenter)" -ForegroundColor Cyan -NoNewline) +
             $(Write-Host " - Is this the right server? y/n " -NoNewline; Read-Host)
             if ($Confirmation -eq 'y') {
                 Write-Host "Confirmed`r`n" -ForegroundColor Green
 
-                $global:ConfirmedVM = $Result
+                $ConfirmedVM = $Result
             }
             else {
                 Write-Host "Stopped" -ForegroundColor Red
-                Exit
+                Break
             }
         }
     }
@@ -198,81 +157,53 @@ function Confirm-VM {
 }
 
 function Suspend-VM {
-
+    $FQDN = $null
     if ($Null -ne $ConfirmedVM.FQDN) {
         # $ConfirmedVM has FQDN
-        $myVM = (Get-VM | Where-Object { $_.Guest.HostName -match "$($ConfirmedVM.FQDN)" })
+        $myVM = (Get-VM | Where-Object { $_.Guest.HostName -eq "$($ConfirmedVM.FQDN)" })
 
-        $FQDN = (Get-VM "$myVM").Guest.Hostname
+        $FQDN = $myVM.Guest.Hostname
 
+        $(Write-Host "`r`nVM: " -NoNewline) + $(Write-Host "$($FQDN)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($myVM.UID.Split('@')[1].Split(':')[0])" -ForegroundColor Cyan -NoNewline)
     }
     else {
         # $ConfirmedVM does not have FQDN
         $myVM = Get-VM -Name "$($ConfirmedVM.VM)"
+
+        $(Write-Host "`r`nVM: " -NoNewline) + $(Write-Host "$($myVM.Name)" -ForegroundColor Cyan -NoNewline) + $(Write-Host " on: " -NoNewline) + $(Write-Host "$($myVM.UID.Split('@')[1].Split(':')[0])" -ForegroundColor Cyan -NoNewline)
     }
 
-    if ($myVM.PowerState -eq "PoweredOn" -and $Null -ne $FQDN) {
-        #Create MM event if VM is PoweredOn and has FQDN
-        $MMParams = @{
-            LogName   = 'Application'
-            Source    = 'MM'
-            EntryType = 'Information'
-            EventID   = 201
-            Category  = 0
-            Message   = "$($FQDN) 99999 $($ChangeID)"
-        }
-        try {
-            Write-EventLog @MMParams -ErrorAction Stop
-            Write-Host "`r`nCreated Maintenance Mode event for $FQDN"
-            Write-Host "Wait 90 seconds to ensure the server is in Maintenace Mode"
-        }
-        catch {
-            Write-Host "`r`nFailed to create scom MM event." -ForegroundColor Red
-            Exit
-        }
-    
-        [int]$Time = 90
-        $Lenght = $Time / 100
-        For ($Time; $Time -gt 0; $Time--) {
-            $min = [int](([string]($Time / 60)).split('.')[0])
-            $text = " " + $min + " minutes " + ($Time % 60) + " seconds left"
-            Write-Progress -Activity "Watiting for..." -Status $Text -PercentComplete ($Time / $Lenght)
-            Start-Sleep 1
-        }
-    
-        Write-Host "$FQDN is now in Maintenace Mode" -ForegroundColor Green
+    $ChangeID = Read-Host "`r`nEnter change-id"
 
-        Write-Host "`r`nProceeding with retire`r`n" -ForegroundColor Cyan
+    # Maintenance mode event here
 
-    }
     if ($myVM.PowerState -eq "PoweredOn") {
         Write-Host "Please wait $myVM is shutting down."
-        Get-VM "$myVM" | Shutdown-VMGuest  -Confirm:$false | Out-Null
+        try {
+            Get-VM "$myVM" | Shutdown-VMGuest  -Confirm:$false | Out-Null
+        } catch {
+            # If vm doesn not have VMware Tools
+            Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
+        }
+        $limit = 8
+        $counter = 0
         do {
             Start-Sleep -Seconds 5
             $myVM = Get-VM -Name "$ServerName"
             $status = $myVM.PowerState
             Write-Host "Please wait $myVM is shutting down."
+            $counter++
+            if ($counter -ge $limit) {
+                # Force VM shutdown and restart counter
+                Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
+                $counter = 0
+            }
         }
         until($status -eq "PoweredOff")
         Write-Host "$myVM has shutdown`r`n"
         Start-Sleep -Seconds 1
     }
     else { Write-Host "`r`n$myVM is already turned off`r`n" }
-
-    $myVMTags = Get-TagAssignment "$myVM"
-
-    Remove-TagAssignment $myVMTags -Confirm:$false
-    Write-Host "Removed tags from $myVM"
-
-    $DecomTags = Get-Tag -Name "DECOM_NOSPLA"
-    foreach ($DecomTag in $DecomTags) {
-        try {
-            Get-VM -Name "$myVM" | New-TagAssignment -Tag $DecomTag -Confirm:$false | Out-Null
-        }
-        catch {}
-    }
-    Write-Host "Assigned decom tag to $myVM"
 
     Get-VM -Name "$myVM" | Set-VM -Name "$myVM (decom $ChangeID)" -Confirm:$false | Out-Null
     Write-Host "$myVM has been renamed to '$myVM (decom $ChangeID)'"
@@ -288,8 +219,10 @@ function Suspend-VM {
         Get-VMwareServer
     }
     else {
-        Exit
+        Break
     }
 }
 
-Get-VMwareServer
+if (!$vCenterCredential) { $vCenterCredential = Get-CredentialsWithRetry }
+
+Initialize-Retire
