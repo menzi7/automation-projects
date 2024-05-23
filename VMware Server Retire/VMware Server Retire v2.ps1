@@ -9,6 +9,24 @@ $vCenterConnections = @(
     'pvv-vcsa.mst.local'
 )
 
+function Initialize-Retire {
+    $vCenterConnectionSuccess = Open-vCenterConnections -credentials $vCenterCredential -connections $vCenterConnections
+
+    if (!$vCenterConnectionSuccess) {
+        Write-Host "Connection failed with service.outforce.dk credentials"
+        $global:vCenterCredential = $null
+        $vCenterCredential = Get-CredentialsWithRetry
+        Initialize-Retire
+        Return
+    }
+    if ($vCenterConnectionSuccess) {
+        Write-Host "`r`nConnected to:" -ForegroundColor Green
+        $global:DefaultVIServers.Name
+        Write-Host
+        Get-VMwareServer
+    }
+}
+
 function Get-CredentialsWithRetry {
     $attempts = 0
     $credential = $null
@@ -24,22 +42,6 @@ function Get-CredentialsWithRetry {
         return $null
     }
     return $vCenterCredential
-}
-
-function Initialize-Retire {
-    $vCenterConnectionSuccess = Open-vCenterConnections -credentials $vCenterCredential -connections $vCenterConnections
-
-    if (!$vCenterConnectionSuccess) {
-        Write-Host "Connection failed with service.outforce.dk credentials"
-        $vCenterCredential = $null
-        Return
-    }
-    if ($vCenterConnectionSuccess) {
-        Write-Host "`r`nConnected to:" -ForegroundColor Green
-        $global:DefaultVIServers.Name
-        Write-Host
-        Get-VMwareServer
-    }
 }
 
 function Open-vCenterConnections {
@@ -79,8 +81,12 @@ function Get-VMwareServer {
             $Result += $entry
         }
     }
-    $Result | Select-Object VM, FQDN, vCenter
-    Confirm-VM
+    if ($Result.Count -eq 0) {
+        Write-Host "No VMs found with the name $($ServerName)"
+        WhatNow
+    } else {
+        Confirm-VM
+    }
 }
 
 function Confirm-VM {
@@ -100,8 +106,8 @@ function Confirm-VM {
 
         # Check if the user entered 'q' to quit
         if ($selectedEntryIndex -eq "q") {
-            Write-Host "Exiting the selection process."
-            Return
+            Write-Host "Exiting the selection process." -ForegroundColor Red
+            WhatNow
         }
         # Check if the user's input is a valid number
         elseif ($selectedEntryIndex -match '^\d+$' -and [int]$selectedEntryIndex -ge 1 -and [int]$selectedEntryIndex -le $Result.Count) {
@@ -135,7 +141,7 @@ function Confirm-VM {
             }
             else {
                 Write-Host "Stopped" -ForegroundColor Red
-                Break
+                WhatNow
             }
         }
         else {
@@ -149,7 +155,7 @@ function Confirm-VM {
             }
             else {
                 Write-Host "Stopped" -ForegroundColor Red
-                Break
+                WhatNow
             }
         }
     }
@@ -180,12 +186,12 @@ function Suspend-VM {
     if ($myVM.PowerState -eq "PoweredOn") {
         Write-Host "Please wait $myVM is shutting down."
         try {
-            Get-VM "$myVM" | Shutdown-VMGuest  -Confirm:$false | Out-Null
+            Get-VM "$myVM" | Shutdown-VMGuest -ErrorAction Stop -Confirm:$false | Out-Null
         } catch {
             # If vm doesn not have VMware Tools
             Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
         }
-        $limit = 8
+        $limit = 10
         $counter = 0
         do {
             Start-Sleep -Seconds 5
@@ -195,6 +201,7 @@ function Suspend-VM {
             $counter++
             if ($counter -ge $limit) {
                 # Force VM shutdown and restart counter
+                Write-Host "Initiating VM Force Stop"
                 Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
                 $counter = 0
             }
@@ -210,6 +217,10 @@ function Suspend-VM {
 
     Write-Host "Server retired successfully" -ForegroundColor Green
 
+    WhatNow
+}
+
+function WhatNow {
     Write-Host "`r`nWhat now?" -ForegroundColor Cyan
     Write-Host " 1: Retire another server"
     Write-Host " 2: Exit"
