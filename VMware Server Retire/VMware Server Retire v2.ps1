@@ -52,7 +52,17 @@ function Open-vCenterConnections {
     Foreach ($connection in $connections) {
         try {
             Connect-ViServer -Server $connection -Credential $credentials -ErrorAction Stop | Out-Null
-        } catch { Return $false }
+        } catch {
+            # Check if the error is related to invalid credentials
+            if ($_.Exception -match "incorrect user name or password") {
+                Write-Host "Authentication failed for $($connection): Incorrect username or password." -ForegroundColor Yellow
+                Return $false
+            } else {
+                Write-Host "Critical error connecting to $($connection):" -ForegroundColor Red
+                Write-Host "$($_.Exception.Message)" -ForegroundColor Red
+                Exit 1
+            }
+        }
     }
     Return $true
 }
