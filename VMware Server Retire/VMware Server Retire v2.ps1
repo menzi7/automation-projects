@@ -3,23 +3,43 @@
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Scope Session -Confirm:$False | Out-Null
 Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -Confirm:$false | Out-Null
 
+New-EventLog -Source "MM" -LogName Application -Erroraction SilentlyContinue
+
 Write-Host "`r`nVMware Server Retire`r`n" -ForegroundColor Cyan
 
-$vCenterConnections = @(
-    'pvv-vcsa.mst.local'
+$domain1Connections = @(
+    'ch-pvv-vcsa01.comp-host.com',
+    'gf-pvv-vcsa01.domain1.local',
+    'gf-pvv-vcsa02.domain1.local',
+    'sc-pvv-vcsa01.domain1.local',
+    'sc-pvv-vcsa02.domain1.local',
+    'uit-pvv-vcsa01.domain1.local'
+)
+$domain2Connections = @(
+    's2-pvv-vcsa01.domain2.local',
+    'uit2-pvv-vcsa01.domain2.local',
+    'uit2-pvv-mvcsa01.domain2.local',
+    'syn-pvv-vcsa01.domain2.local',
+    'ftl-pvv-vcsa01.domain2.local'
 )
 
 function Initialize-Retire {
-    $vCenterConnectionSuccess = Open-vCenterConnections -credentials $vCenterCredential -connections $vCenterConnections
+    $domain1ConnectionSuccess = Open-vCenterConnections -credentials $domain1Credential -connections $domain1Connections
+    $domain2ConnectionSuccess = Open-vCenterConnections -credentials $domain2Credential -connections $domain2Connections
 
-    if (!$vCenterConnectionSuccess) {
-        Write-Host "Connection failed with service.outforce.dk credentials"
-        $global:vCenterCredential = $null
-        $vCenterCredential = Get-CredentialsWithRetry
+    if (!$domain1ConnectionSuccess) {
+        Write-Host "Connection failed with domain1.local credentials"
+        $global:domain1Credential = $null
+        $domain1Credential = Get-CredentialsWithRetry -credentialName "domain1.local"
         Initialize-Retire
-        Return
     }
-    if ($vCenterConnectionSuccess) {
+    if (!$domain2ConnectionSuccess) {
+        Write-Host "Connection failed with domain2.local credentials"
+        $global:domain2Credential = $null
+        $domain2Credential = Get-CredentialsWithRetry -credentialName "domain2.local"
+        Initialize-Retire
+    }
+    if ($domain1ConnectionSuccess -and $domain2ConnectionSuccess) {
         Write-Host "`r`nConnected to:" -ForegroundColor Green
         $global:DefaultVIServers.Name
         Write-Host
@@ -28,20 +48,27 @@ function Initialize-Retire {
 }
 
 function Get-CredentialsWithRetry {
+    param (
+        [string]$credentialName
+    )
+    switch ($credentialName) {
+        "domain1.local" { $hint = "xxx.admin" }
+        "domain2.local" { $hint = "admXXX" }
+    }
     $attempts = 0
     $credential = $null
     while (!$credential -and $attempts -lt 3) {
-        $credential = Get-Credential -Message "Enter your credentials (to connect to vCenters)"
+        $credential = Get-Credential -Message "Enter your $credentialName credentials (to connect to vCenters)`r`n$hint"
         if (!$credential) {
             $attempts++
-            Write-Host "Invalid credentials. Attempt $attempts of 3."
+            Write-Host "Invalid $credentialName credentials. Attempt $attempts of 3."
         }
     }
     if (!$credential) {
-        Write-Host "Failed to get valid credentials after 3 attempts. Exiting.`r`n"
-        return $null
+        Write-Host "Failed to get valid $credentialName credentials after 3 attempts. Exiting.`r`n"
+        Exit
     }
-    return $vCenterCredential
+    return $credential
 }
 
 function Open-vCenterConnections {
@@ -75,10 +102,9 @@ function Get-VMwareServer {
         $VMs = Get-VM -Name "*$ServerName*" -ErrorAction Stop
     }
     catch {
-        Write-Host "Server with name '$ServerName' was not found... Stopped"
-        return
+        Write-Host "No VMs found with the name $($ServerName)"
+        WhatNow
     }
-
     $Result = @()
     foreach ($vm in $VMs) {
         $VMHost = Get-VMHost | Where-Object { $_.Name -eq $vm.VMHost.Name }
@@ -191,8 +217,51 @@ function Suspend-VM {
 
     $ChangeID = Read-Host "`r`nEnter change-id"
 
-    # Maintenance mode event here
+    if ($myVM.PowerState -eq "PoweredOn" -and $Null -ne $FQDN) {
+        #Create MM event if VM is PoweredOn and has FQDN
+        $MMParams = @{
+            LogName   = 'Application'
+            Source    = 'MM'
+            EntryType = 'Information'
+            EventID   = 201
+            Category  = 0
+            Message   = "$($FQDN) 99999 $($ChangeID)"
+        }
+        try {
+            Write-EventLog @MMParams -ErrorAction Stop
+            Write-Host "`r`nCreated Maintenance Mode event for $FQDN"
+            Write-Host "Wait 90 seconds to ensure the server is in Maintenace Mode"
+        }
+        catch {
+            Write-Host "`r`nFailed to create scom MM event." -ForegroundColor Red
+            Break
+        }
 
+        $Seconds = 90
+        $Message = "Wait 90 seconds to ensure the server is in Maintenace Mode..."
+        ForEach ($Count in (1..$Seconds)) {
+            # Update the progress
+            Write-Progress -Id 1 -Activity $Message -Status "Waiting for $Seconds seconds, $($Seconds - $Count) left" -PercentComplete (($Count / $Seconds) * 100)
+            # Check if 's' key is pressed
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true).Key
+                if ($key -eq 'S') {
+                    $stop = $true
+                    break
+                }
+            }
+            # Sleep for a second
+            Start-Sleep -Seconds 1
+        }
+
+        if ($stop) {
+            Write-Host "`r`nMM countdown skipped by user." -ForegroundColor Yellow
+            Write-Host "`r`nProceeding with retire`r`n" -ForegroundColor Cyan
+        } else {
+            Write-Host "$FQDN is now in Maintenance Mode" -ForegroundColor Green
+            Write-Host "`r`nProceeding with retire`r`n" -ForegroundColor Cyan
+        }
+    }
     if ($myVM.PowerState -eq "PoweredOn") {
         Write-Host "Please wait $myVM is shutting down."
         try {
@@ -211,9 +280,24 @@ function Suspend-VM {
             $counter++
             if ($counter -ge $limit) {
                 # Force VM shutdown and restart counter
-                Write-Host "Initiating VM Force Stop"
-                Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
-                $counter = 0
+                try {
+                    Write-Host "Initiating VM Force Stop"
+                    Get-VM "$myVM" | Stop-VM -Confirm:$false | Out-Null
+                    $counter = 0
+                } catch {
+                    if ($_.Exception -match "The operation is not allowed in the current state") {
+                        Write-Host "Force Stop failed, VM is in shutting down state." -ForegroundColor Yellow
+                        $counter = 0
+                    }
+                    elseif ($_.Exception -match "The attempted operation cannot be performed in the current state (Powered off)") {
+                        $status = $myVM.PowerState
+                        $counter = 0
+                    }
+                    else {
+                        Write-Host "$($_.Exception.Message)" -ForegroundColor Red
+                        $counter = 0
+                    }
+                }
             }
         }
         until($status -eq "PoweredOff")
@@ -222,7 +306,14 @@ function Suspend-VM {
     }
     else { Write-Host "`r`n$myVM is already turned off`r`n" }
 
-    Get-VM -Name "$myVM" | Set-VM -Name "$myVM (decom $ChangeID)" -Confirm:$false | Out-Null
+    try {
+        $ExclusionTag = Get-Tag -Name "Excluded" -Server "$($myVM.UID.Split('@')[1].Split(':')[0])" -ErrorAction Stop
+        Get-VM -Name "$myVM" | New-TagAssignment -Tag $ExclusionTag -ErrorAction Stop -Confirm:$false | Out-Null
+        Write-Host "$myVM has beem excluded from TSM VE backup."
+    } catch { Write-Host "TSM VE Exclude tag doesn't exist on the vCenter. Please check if the tag is missing or if there isn't TSM VE on the vCenter." }
+
+    $newVMname = $myVM.name + " (decom " + $ChangeID + ")"
+    Get-VM -Name "$myVM" | Set-VM -Name "$newVMname" -Confirm:$false | Out-Null
     Write-Host "$myVM has been renamed to '$myVM (decom $ChangeID)'"
 
     Write-Host "Server retired successfully" -ForegroundColor Green
@@ -244,6 +335,7 @@ function WhatNow {
     }
 }
 
-if (!$vCenterCredential) { $vCenterCredential = Get-CredentialsWithRetry }
+if (!$domain1Credential) { $domain1Credential = Get-CredentialsWithRetry -credentialName "domain1.local" }
+if (!$domain2Credential) { $domain2Credential = Get-CredentialsWithRetry -credentialName "domain2.local" }
 
 Initialize-Retire
