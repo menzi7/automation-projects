@@ -14,7 +14,7 @@ function ConvertTo-HtmlTable {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true)] 
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         [PSObject[]]$InputObject
     )
 
@@ -32,7 +32,7 @@ function ConvertTo-HtmlTable {
             $table += "<tr>"
             foreach ($h in $header) {
                 $table += "<td>$($line.$h)</td>"
-            } 
+            }
             $table += "</tr>"
         }
     }
@@ -189,7 +189,7 @@ Function Start-Countdown {
 
     Param(
         [Int32]$Seconds = 10,
-        [string]$Message = "Pausing for 10 seconds..."
+        [string]$Message = "Pausing for $Seconds seconds..."
     )
     ForEach ($Count in (1..$Seconds)) {
         Write-Progress -Id 1 -Activity $Message -Status "Waiting for $Seconds seconds, $($Seconds - $Count) left" -PercentComplete (($Count / $Seconds) * 100)
